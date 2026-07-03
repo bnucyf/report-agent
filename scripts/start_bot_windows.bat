@@ -38,21 +38,19 @@ if not exist .env (
     exit /b 1
 )
 
-REM 检查是否有旧进程仍在运行（防止多实例冲突导致消息不稳定）
-wmic process where "commandline like '%dingtalk_bot.bot%' and name='python.exe'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1
-if not errorlevel 1 (
-    echo [警告] 检测到已有 dingtalk_bot 进程在运行！
-    echo [警告] 多实例同时运行会导致消息回复不稳定（消息随机分发给旧/新实例）。
-    echo.
-    echo 正在终止旧进程...
-    wmic process where "commandline like '%dingtalk_bot.bot%' and name='python.exe'" call terminate 2>nul
-    timeout /t 2 /nobreak >nul
-    echo [提示] 旧进程已终止。
-    echo.
-)
+REM ===== 清理旧进程 =====
+REM 注意：batch 文件中 %% 才是字面量 %，否则 cmd.exe 会把 %...% 当环境变量！
+REM 使用 Python 脚本精确查找并终止旧 dingtalk_bot 进程（避免 WMIC % 转义问题）
+
+echo [步骤1] 检查旧进程...
+python -c "import subprocess,sys; r=subprocess.run(['wmic','process','where','name=\"python.exe\"','get','processid,commandline','/format:csv'],capture_output=True,text=True,timeout=10); lines=[l for l in r.stdout.splitlines() if 'dingtalk_bot' in l and 'python.exe' in l.lower()]; pids=[]; for l in lines: parts=l.strip().split(','); pid=parts[-1].strip() if parts else ''; if pid.isdigit(): pids.append(pid); print(f'发现 {len(pids)} 个旧进程: {pids}') if pids else print('无旧进程'); for pid in pids: subprocess.run(['taskkill','/F','/PID',pid],capture_output=True); print(f'已终止 PID {pid}')" 2>nul
+echo.
+
+timeout /t 1 /nobreak >nul
 
 REM 检查关键依赖是否已安装，缺失则自动安装
 REM 同时验证 dingtalk-stream SDK 的实际 API（防止版本差异导致 bot.py 运行时失败）
+echo [步骤2] 检查依赖...
 python -c "import dingtalk_stream; from dingtalk_stream import DingTalkStreamClient, AckMessage; from dingtalk_stream.credential import Credential; from dingtalk_stream.chatbot import ChatbotMessage, ChatbotHandler; import apscheduler, dotenv, requests, yaml" >nul 2>&1
 if errorlevel 1 (
     echo [提示] 检测到依赖缺失或 SDK API 不兼容，正在自动安装...
@@ -74,14 +72,17 @@ set PYTHONIOENCODING=utf-8
 
 REM 进入 app 目录启动机器人
 cd app
-echo 正在启动钉钉机器人...
+echo [步骤3] 启动钉钉机器人...
 echo 按 Ctrl+C 停止
 echo.
 
 python -m dingtalk_bot.bot
 
+echo.
 if errorlevel 1 (
-    echo.
     echo [错误] 机器人启动失败，请检查 outputs\bot.log
-    pause
+) else (
+    echo [提示] 机器人已停止运行。
 )
+echo.
+pause
