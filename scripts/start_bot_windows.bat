@@ -56,6 +56,9 @@ if errorlevel 1 (
 
 echo.
 
+REM 设置 UTF-8 输出编码，防止中文日志在 GBK 控制台乱码
+set PYTHONIOENCODING=utf-8
+
 REM 进入 app 目录启动机器人
 cd app
 echo 正在启动钉钉机器人...

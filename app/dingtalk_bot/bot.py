@@ -88,33 +88,14 @@ def dispatch(text: str, conversation_id: str) -> list[dict[str, str]]:
         }]
 
 
-def _send_messages(conversation_id: str, messages: list[dict[str, str]]) -> None:
-    """把 handler 返回的消息列表逐条发送。"""
-    for msg in messages:
-        msg_type = msg.get("type", "markdown")
-        title = msg.get("title", "通知")
-        text = msg.get("text", "")
-        try:
-            if msg_type == "markdown":
-                credential.send_markdown_to_chatbot(conversation_id, title, text)
-            elif msg_type == "action_card":
-                credential.send_action_card(
-                    conversation_id, title, text,
-                    msg.get("btn_title", "查看详情"),
-                    msg.get("btn_url", ""),
-                )
-            time.sleep(0.3)  # 避免消息发送过快被限流
-        except Exception as exc:
-            logger.error("发送消息失败 (type=%s, title=%s): %s", msg_type, title, exc)
-
-
 # ---------- Stream 回调 Handler ----------
 
 class ReportChatbotHandler:
     """包装 SDK 的 ChatbotHandler，将消息转给业务 dispatch。
 
-    注意：不直接继承 AsyncChatbotHandler，而是在运行时按 SDK 实际 API 选择继承，
-    避免不同版本之间类签名差异导致启动失败。
+    核心修改：使用 SDK 自带的 reply_markdown / reply_text 方法
+    通过 sessionWebhook 回复消息（Stream 模式官方推荐方式），
+    而不再调用 /v1.0/robot/oToMessages/batchSend REST API。
     """
 
     @staticmethod
@@ -122,48 +103,28 @@ class ReportChatbotHandler:
         """返回一个继承自 base_cls 的具体 Handler 类。"""
 
         class _Handler(base_cls):
+
             def process(self, callback_message: Any):
+                """处理收到的机器人消息，通过 sessionWebhook 回复。"""
                 try:
-                    msg = self._parse_message(callback_message)
-                    if not msg.get("conversation_id"):
-                        logger.warning("收到无 conversation_id 的消息，忽略")
+                    # 1. 从 CallbackMessage 中提取原始 data 字典
+                    data = getattr(callback_message, "data", callback_message)
+                    if not isinstance(data, dict):
+                        logger.warning("消息 data 不是字典: %s", type(data))
                         return
 
-                    text = msg.get("text", "").strip()
-                    conversation_id = msg["conversation_id"]
-                    sender_id = msg.get("sender_id", "")
-                    chat_type = msg.get("chat_type", "")
-
-                    logger.info("收到消息: sender=%s, conv=%s, type=%s, text=%s",
-                                sender_id, conversation_id, chat_type, text[:100])
-
-                    if not text:
-                        text = "帮助"
-
-                    messages = dispatch(text, conversation_id)
-                    _send_messages(conversation_id, messages)
-                except Exception as exc:
-                    logger.error("处理用户消息失败: %s", exc, exc_info=True)
-
-            def _parse_message(self, callback_message: Any) -> dict[str, Any]:
-                """把 SDK CallbackMessage / ChatbotMessage 转成统一字典。"""
-                # 优先使用 ChatbotMessage.from_dict 解析 data
-                data = getattr(callback_message, "data", callback_message)
-                if not isinstance(data, dict):
-                    logger.warning("消息 data 不是字典: %s", type(data))
-                    return {}
-
-                try:
+                    # 2. 使用 SDK 的 ChatbotMessage 解析
                     from dingtalk_stream.chatbot import ChatbotMessage
                     chat_msg = ChatbotMessage.from_dict(data)
-                except Exception:
-                    chat_msg = None
 
-                if chat_msg is not None:
+                    # 3. 提取文本、会话类型等
                     text = ""
                     if chat_msg.text and getattr(chat_msg.text, "content", None):
                         text = chat_msg.text.content
+
                     chat_type = str(chat_msg.conversation_type or "")
+                    conversation_id = chat_msg.conversation_id or ""
+
                     # 群聊中 @ 机器人时清理 @机器人名
                     if chat_type == "2" and "@" in text:
                         at_parts = text.split(" ", 1)
@@ -171,28 +132,70 @@ class ReportChatbotHandler:
                             text = at_parts[1].strip()
                         else:
                             text = text.replace("@", "").strip()
-                    return {
-                        "text": text,
-                        "conversation_id": chat_msg.conversation_id or "",
-                        "sender_id": chat_msg.sender_id or "",
-                        "chat_type": chat_type,
-                    }
 
-                # 兜底：直接读字典
-                text = data.get("text", {}).get("content", "") if isinstance(data.get("text"), dict) else ""
-                chat_type = str(data.get("conversationType", ""))
-                if chat_type == "2" and "@" in text:
-                    at_parts = text.split(" ", 1)
-                    if len(at_parts) > 1 and at_parts[0].startswith("@"):
-                        text = at_parts[1].strip()
-                    else:
-                        text = text.replace("@", "").strip()
-                return {
-                    "text": text,
-                    "conversation_id": data.get("conversationId", ""),
-                    "sender_id": data.get("senderId", ""),
-                    "chat_type": chat_type,
-                }
+                    if not conversation_id:
+                        logger.warning("收到无 conversation_id 的消息，忽略")
+                        return
+
+                    if not text:
+                        text = "帮助"
+
+                    logger.info("收到消息: sender=%s, conv=%s, type=%s, text=%s, webhook=%s",
+                                chat_msg.sender_id or "",
+                                conversation_id,
+                                chat_type,
+                                text[:100],
+                                "有" if chat_msg.session_webhook else "无")
+
+                    # 4. 路由到业务 handler
+                    messages = dispatch(text, conversation_id)
+
+                    # 5. 通过 SDK 的 reply 方法发送回复
+                    self._send_replies(chat_msg, messages)
+
+                except Exception as exc:
+                    logger.error("处理用户消息失败: %s", exc, exc_info=True)
+
+            def _send_replies(self, chat_msg: Any, messages: list[dict[str, str]]) -> None:
+                """使用 SDK 的 reply_markdown / reply_text 回复消息。
+
+                优先使用 sessionWebhook（Stream 模式官方方式）；
+                如果 sessionWebhook 不可用，回退到 REST API。
+                """
+                for msg in messages:
+                    msg_type = msg.get("type", "markdown")
+                    title = msg.get("title", "通知")
+                    text_content = msg.get("text", "")
+
+                    try:
+                        if chat_msg.session_webhook:
+                            # 方式 A：通过 sessionWebhook 回复（Stream 模式推荐）
+                            if msg_type == "markdown":
+                                result = self.reply_markdown(title, text_content, chat_msg)
+                                logger.info("reply_markdown 结果: %s", result)
+                            elif msg_type == "text":
+                                result = self.reply_text(text_content, chat_msg)
+                                logger.info("reply_text 结果: %s", result)
+                            else:
+                                # 其他类型也用 markdown 回复
+                                result = self.reply_markdown(title, text_content, chat_msg)
+                                logger.info("reply_markdown(fallback) 结果: %s", result)
+                        else:
+                            # 方式 B：sessionWebhook 不可用，回退到 REST API
+                            logger.warning("sessionWebhook 不可用，回退到 REST API")
+                            if msg_type == "markdown":
+                                result = credential.send_markdown_to_chatbot(
+                                    chat_msg.conversation_id, title, text_content)
+                                logger.info("REST API send_markdown 结果: %s", result)
+                            elif msg_type == "text":
+                                # REST API 没有 send_text_to_chatbot，用 markdown 替代
+                                result = credential.send_markdown_to_chatbot(
+                                    chat_msg.conversation_id, title or "通知", text_content)
+                                logger.info("REST API send_markdown(text fallback) 结果: %s", result)
+
+                        time.sleep(0.3)  # 避免消息发送过快被限流
+                    except Exception as exc:
+                        logger.error("发送消息失败 (type=%s, title=%s): %s", msg_type, title, exc, exc_info=True)
 
         return _Handler
 
@@ -290,7 +293,7 @@ def main() -> int:
         logger.warning("定时任务启动失败（不影响机器人运行）: %s", exc)
 
     logger.info("=" * 60)
-    logger.info("🤖 机器人已就绪，等待消息...")
+    logger.info("[BOT] 机器人已就绪，等待消息...")
     logger.info("=" * 60)
 
     try:
