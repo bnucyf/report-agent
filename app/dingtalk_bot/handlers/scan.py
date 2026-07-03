@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from scan_state import load_state, state_summary
-from card_builder import build_scan_progress_markdown, build_kpi_markdown
+from dingtalk_bot.card_builder import build_scan_progress_markdown, build_kpi_markdown
 
 logger = logging.getLogger(__name__)
 

@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import logging
-import os
-import sys
 from typing import Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from report_pusher import push_report_to_chat
+from dingtalk_bot.report_pusher import push_report_to_chat
 
 logger = logging.getLogger(__name__)
 

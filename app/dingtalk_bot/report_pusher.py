@@ -10,8 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import credential
-from .card_builder import build_kpi_markdown
+from dingtalk_bot import credential
+from dingtalk_bot.card_builder import build_kpi_markdown
 
 logger = logging.getLogger(__name__)
 

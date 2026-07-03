@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
-import sys
 from typing import Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from data_loader import load_snapshot_bundle
-from card_builder import build_kpi_markdown, build_topn_markdown, build_bar_chart_markdown
+from dingtalk_bot.card_builder import build_kpi_markdown, build_topn_markdown, build_bar_chart_markdown
 
 logger = logging.getLogger(__name__)
 

@@ -5,14 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import sys
-import os
-
-# 确保能 import app 目录下的模块
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from data_loader import read_csv, load_snapshot_bundle
-from card_builder import build_kpi_markdown, build_topn_markdown, build_table_markdown
+from data_loader import load_snapshot_bundle
+from dingtalk_bot.card_builder import build_kpi_markdown, build_topn_markdown, build_table_markdown
 
 logger = logging.getLogger(__name__)
 

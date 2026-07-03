@@ -6,7 +6,7 @@ import logging
 import uuid
 from typing import Any
 
-from . import credential
+from dingtalk_bot import credential
 
 logger = logging.getLogger(__name__)
 

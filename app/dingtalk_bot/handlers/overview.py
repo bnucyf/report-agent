@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
-import sys
 from typing import Any
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from data_loader import load_snapshot_bundle
-from card_builder import build_kpi_markdown, build_bar_chart_markdown, build_topn_markdown
+from dingtalk_bot.card_builder import build_kpi_markdown, build_bar_chart_markdown, build_topn_markdown, build_scan_progress_markdown
 from scan_state import state_summary
 
 logger = logging.getLogger(__name__)
@@ -50,7 +46,6 @@ def handle(text: str, conversation_id: str) -> list[dict[str, str]]:
     # 扫描状态
     scan = state_summary()
     if scan.get("has_state"):
-        from card_builder import build_scan_progress_markdown
         messages.append({
             "type": "markdown",
             "title": "扫描状态",

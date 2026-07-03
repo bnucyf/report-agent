@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import logging
-import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from router import get_menu_text
+from dingtalk_bot.router import get_menu_text
 
 logger = logging.getLogger(__name__)
 
