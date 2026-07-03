@@ -1,0 +1,52 @@
+# 智能报表机器人 - 定时任务配置
+# cron 格式: "分 时 日 月 周" (标准 5 段 cron)
+# 周: 0=周日, 1=周一, ..., 6=周六
+
+scheduler:
+  timezone: Asia/Shanghai
+
+  jobs:
+    # 每日生产用料推送（工作日早 8 点 → 推群）
+    - name: 每日生产用料推送
+      cron: "0 8 * * 1-5"
+      target: chat_group
+      chat_id: "oc_xxxxxxxxxxxxx"        # ← 替换为你的钉钉群 chat_id
+      action: send_production_usage
+      params:
+        limit: 200
+        title: "今日生产用料速览"
+
+    # 每周质量周报（周一 9 点 → 推群）
+    - name: 每周质量周报
+      cron: "0 9 * * 1"
+      target: chat_group
+      chat_id: "oc_xxxxxxxxxxxxx"
+      action: send_quality_weekly
+      params:
+        top_n: 30
+
+    # 月度字段资产盘点（每月 1 日凌晨 2 点 → 推群）
+    - name: 月度字段资产盘点
+      cron: "0 2 1 * *"
+      target: chat_group
+      chat_id: "oc_xxxxxxxxxxxxx"
+      action: send_field_inventory
+      params:
+        modules: [基础档案, 财务, 库存]
+
+    # 每周自动重扫（周日凌晨 2 点 → 扫描完成后通知）
+    - name: 每周自动重扫
+      cron: "0 2 * * 0"
+      target: chat_group
+      chat_id: "oc_xxxxxxxxxxxxx"
+      action: run_full_scan
+      params:
+        sample_rows: 500
+
+    # 每日数据总览推送到管理员单聊
+    - name: 每日数据总览
+      cron: "0 8 * * 1-5"
+      target: single_chat
+      user_id: "manager_xxxxx"            # ← 替换为管理员的钉钉 user_id
+      action: send_overview
+      params: {}
