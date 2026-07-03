@@ -34,14 +34,23 @@ if not exist .venv (
 echo [2/5] 激活虚拟环境...
 call .venv\Scripts\activate.bat
 
-echo [3/5] 安装依赖...
-pip install -r requirements.txt -q
+echo [3/5] 安装依赖（可能需要几分钟，请耐心等待）...
+pip install -r requirements.txt
 if errorlevel 1 (
     echo [错误] 依赖安装失败，请检查网络连接。
     pause
     exit /b 1
 )
 echo 依赖安装完成。
+
+echo [3.5/5] 验证关键依赖...
+python -c "import dingtalk_stream, apscheduler, dotenv, requests, yaml, pandas, pymssql, streamlit, openpyxl" >nul 2>&1
+if errorlevel 1 (
+    echo [错误] 依赖验证失败，部分包未能正常导入。
+    pause
+    exit /b 1
+)
+echo 依赖验证通过。
 
 echo [4/5] 复制配置文件...
 if not exist .env (

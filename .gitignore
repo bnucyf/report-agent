@@ -52,3 +52,7 @@ desktop.ini
 !docs/**/*.doc
 # 项目内部进展同步文件
 /森德科技-进展同步.docx
+
+# --- 运行时配置（由安装脚本生成，不入库）---
+config/bot_keywords.json
+outputs/bot_first_run.flag
