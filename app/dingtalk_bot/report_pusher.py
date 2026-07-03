@@ -112,44 +112,110 @@ def generate_pdf_from_html(html_path: Path | None = None) -> Path | None:
     return None
 
 
-def push_report_to_chat(conversation_id: str, report_type: str = "both") -> dict[str, Any]:
+def push_report_to_chat(
+    conversation_id: str,
+    report_type: str = "both",
+    chat_type: str = "1",
+    sender_staff_id: str = "",
+    session_webhook: str = "",
+) -> dict[str, Any]:
     """推送报告到钉钉会话。
 
-    report_type: "pdf" / "excel" / "both"
-    返回 {pdf_path, excel_path, upload_results}
+    report_type:     "pdf" / "excel" / "both"
+    chat_type:       "1"=单聊 / "2"=群聊（决定 send_file_to_user/group）
+    sender_staff_id: 单聊时必填（消息接收人）
+    session_webhook: 若有，优先通过 sessionWebhook 发文件消息（Stream 模式推荐）
+
+    返回 {pdf_path, excel_path, send_results}
+    send_results: 包含每个文件的 {upload_media_id, send_result}，便于排查
     """
     _ensure_dirs()
-    results: dict[str, Any] = {"pdf_path": None, "excel_path": None, "uploads": []}
+    results: dict[str, Any] = {
+        "pdf_path": None,
+        "excel_path": None,
+        "uploads": [],
+        "send_results": [],
+    }
 
-    # 1) 生成 Excel
+    # 1) 生成 Excel 并上传+发送
     if report_type in ("excel", "both"):
         xlsx = generate_excel_from_csv("production_material_usage_*.csv", "生产用料明细")
         if xlsx:
             results["excel_path"] = str(xlsx)
             try:
                 upload = credential.upload_file(str(xlsx))
-                results["uploads"].append({"type": "excel", "result": upload})
+                media_id = upload.get("media_id", "")
+                logger.info("Excel 上传结果: media_id=%s, resp=%s", media_id, upload)
+                results["uploads"].append({"type": "excel", "upload_resp": upload})
+
+                if media_id and not media_id.startswith("@"):
+                    # 旧 oapi 上传返回的 media_id 不带 @ 前缀，需要补
+                    media_id = "@" + media_id
+
+                # 真正把文件发到聊天
+                send_result = _send_file_to_chat(
+                    file_path=str(xlsx),
+                    media_id=media_id,
+                    chat_type=chat_type,
+                    conversation_id=conversation_id,
+                    sender_staff_id=sender_staff_id,
+                    session_webhook=session_webhook,
+                )
+                results["send_results"].append({"type": "excel", "media_id": media_id, "send_resp": send_result})
+                logger.info("Excel 发送结果: %s", send_result)
             except Exception as exc:
+                logger.error("Excel 处理失败: %s", exc, exc_info=True)
                 results["uploads"].append({"type": "excel", "error": str(exc)})
 
-    # 2) 生成 PDF
+    # 2) 生成 PDF 并上传+发送
     if report_type in ("pdf", "both"):
         pdf = generate_pdf_from_html()
         if pdf:
             results["pdf_path"] = str(pdf)
             try:
                 upload = credential.upload_file(str(pdf))
-                results["uploads"].append({"type": "pdf", "result": upload})
+                media_id = upload.get("media_id", "")
+                logger.info("PDF 上传结果: media_id=%s, resp=%s", media_id, upload)
+                results["uploads"].append({"type": "pdf", "upload_resp": upload})
+
+                if media_id and not media_id.startswith("@"):
+                    media_id = "@" + media_id
+
+                send_result = _send_file_to_chat(
+                    file_path=str(pdf),
+                    media_id=media_id,
+                    chat_type=chat_type,
+                    conversation_id=conversation_id,
+                    sender_staff_id=sender_staff_id,
+                    session_webhook=session_webhook,
+                )
+                results["send_results"].append({"type": "pdf", "media_id": media_id, "send_resp": send_result})
+                logger.info("PDF 发送结果: %s", send_result)
             except Exception as exc:
+                logger.error("PDF 处理失败: %s", exc, exc_info=True)
                 results["uploads"].append({"type": "pdf", "error": str(exc)})
 
-    # 3) 发送 Markdown 通知
-    md_lines = ["## 分析报告已生成\n"]
+    # 3) 发送 Markdown 通知（汇报哪些文件已发送）
+    md_lines = ["## 分析报告推送\n"]
+    success_files = [s for s in results["send_results"] if s.get("send_resp", {}).get("errcode") == 0]
+    failed_files = [s for s in results["send_results"] if s.get("send_resp", {}).get("errcode") != 0]
+
     if results["pdf_path"]:
         md_lines.append(f"- 📄 PDF 报告：`{Path(results['pdf_path']).name}`")
     if results["excel_path"]:
         md_lines.append(f"- 📊 Excel 明细：`{Path(results['excel_path']).name}`")
-    md_lines.append("\n> 文件已上传到钉钉，请在聊天文件中查看。")
+
+    if success_files:
+        md_lines.append(f"\n✅ 已成功发送 {len(success_files)} 个文件到聊天")
+    if failed_files:
+        md_lines.append(f"\n❌ {len(failed_files)} 个文件发送失败，请查看日志")
+        for f in failed_files:
+            err = f.get("send_resp", {}).get("errmsg", "未知错误")
+            md_lines.append(f"  - {f.get('type')}: {err}")
+    if not results["send_results"]:
+        md_lines.append("\n⚠️ 报告未生成，请检查浏览器是否安装（PDF）或 CSV 快照是否存在（Excel）")
+
+    md_lines.append("\n> 文件已发送到聊天，请直接点击查看或下载。")
 
     try:
         credential.send_markdown_to_chatbot(
@@ -161,3 +227,47 @@ def push_report_to_chat(conversation_id: str, report_type: str = "both") -> dict
         logger.error("报告通知发送失败: %s", exc)
 
     return results
+
+
+def _send_file_to_chat(
+    file_path: str,
+    media_id: str,
+    chat_type: str,
+    conversation_id: str,
+    sender_staff_id: str,
+    session_webhook: str,
+) -> dict[str, Any]:
+    """把上传好的文件（media_id）作为消息发到聊天。
+
+    优先级：
+    1. sessionWebhook 直接 POST（Stream 模式推荐，最稳定）
+    2. batchSend / sendToGroupConversation（REST API 回退）
+    """
+    import os
+    file_name = os.path.basename(file_path)
+
+    if not media_id:
+        return {"errcode": -1, "errmsg": "media_id 为空，上传可能失败"}
+
+    # 优先级 1：通过 sessionWebhook 发送（Stream 模式官方推荐）
+    if session_webhook:
+        try:
+            result = credential.send_file_via_session_webhook(session_webhook, file_name, media_id)
+            if result.get("errcode") == 0:
+                return result
+            logger.warning("sessionWebhook 发文件失败，回退到 REST API: %s", result)
+        except Exception as exc:
+            logger.warning("sessionWebhook 发文件异常: %s", exc)
+
+    # 优先级 2：REST API 回退
+    if chat_type == "1":
+        # 单聊：batchSend + userIds
+        if not sender_staff_id:
+            return {"errcode": -1, "errmsg": "单聊需要 sender_staff_id"}
+        return credential.send_file_to_user(sender_staff_id, file_name, media_id)
+    elif chat_type == "2":
+        # 群聊：sendToGroupConversation
+        return credential.send_file_to_group(conversation_id, file_name, media_id)
+    else:
+        # 未知类型,尝试单聊
+        return credential.send_file_to_user(sender_staff_id, file_name, media_id)

@@ -209,10 +209,10 @@ def update_card_instance(out_track_id: str, card_data: dict[str, Any]) -> dict[s
     return _api_put(f"/v1.0/card/instances", body)
 
 
-# ---------- 文件上传 ----------
+# ---------- 文件上传 + 发送文件消息 ----------
 
 def upload_file(file_path: str, file_name: str | None = None) -> dict[str, Any]:
-    """上传文件到钉钉，返回 media_id / download_code。"""
+    """上传文件到钉钉，返回 media_id（仅上传，不会出现在聊天里）。"""
     import os
     name = file_name or os.path.basename(file_path)
     # 1) 获取上传凭证
@@ -221,3 +221,56 @@ def upload_file(file_path: str, file_name: str | None = None) -> dict[str, Any]:
     with open(file_path, "rb") as f:
         resp = requests.post(url, files={"media": (name, f)}, timeout=60)
     return resp.json()
+
+
+def send_file_via_session_webhook(session_webhook: str, file_name: str, media_id: str) -> dict[str, Any]:
+    """通过 sessionWebhook 发送文件消息（Stream 模式推荐，SDK 行为一致）。
+
+    session_webhook: 用户消息中带有的 sessionWebhook URL（一次性）
+    file_name:       文件名（带后缀）
+    media_id:        upload_file() 返回的 mediaId
+    """
+    if not session_webhook or not media_id:
+        logger.warning("send_file_via_session_webhook: sessionWebhook 或 mediaId 为空")
+        return {"errcode": -1, "errmsg": "参数缺失"}
+    body = {
+        "msgtype": "file",
+        "file": {
+            "fileName": file_name,
+            "mediaId": media_id,
+        },
+    }
+    # session_webhook 本身就是一次性 webhook URL,直接 POST 即可
+    resp = requests.post(session_webhook, json=body, timeout=15)
+    try:
+        return resp.json()
+    except Exception:
+        return {"errcode": -1, "errmsg": f"非 JSON 响应: {resp.text[:200]}"}
+
+
+def send_file_to_user(user_id: str, file_name: str, media_id: str) -> dict[str, Any]:
+    """通过机器人向指定用户单聊发送文件消息（msgKey=sampleFile）。"""
+    if not user_id or not media_id:
+        logger.warning("send_file_to_user: userId 或 mediaId 为空，无法发送")
+        return {"errcode": -1, "errmsg": "userId/mediaId 为空"}
+    body = {
+        "robotCode": get_client_id(),
+        "userIds": [user_id],
+        "msgKey": "sampleFile",
+        "msgParam": json.dumps({"fileName": file_name, "mediaId": media_id}, ensure_ascii=False),
+    }
+    return _api_post("/v1.0/robot/oToMessages/batchSend", body)
+
+
+def send_file_to_group(conversation_id: str, file_name: str, media_id: str) -> dict[str, Any]:
+    """通过机器人向群聊发送文件消息（msgKey=sampleFile）。"""
+    if not conversation_id or not media_id:
+        logger.warning("send_file_to_group: conversationId 或 mediaId 为空，无法发送")
+        return {"errcode": -1, "errmsg": "conversationId/mediaId 为空"}
+    body = {
+        "robotCode": get_client_id(),
+        "openConversationId": conversation_id,
+        "msgKey": "sampleFile",
+        "msgParam": json.dumps({"fileName": file_name, "mediaId": media_id}, ensure_ascii=False),
+    }
+    return _api_post("/v1.0/robot/oToMessages/sendToGroupConversation", body)

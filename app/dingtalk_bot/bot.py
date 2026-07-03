@@ -74,8 +74,18 @@ _HANDLER_MAP: dict[str, Any] = {
 }
 
 
-def dispatch(text: str, conversation_id: str) -> list[dict[str, str]]:
-    """根据用户文本路由到对应 handler，返回消息列表。"""
+def dispatch(
+    text: str,
+    conversation_id: str,
+    chat_type: str = "1",
+    sender_staff_id: str = "",
+    session_webhook: str = "",
+) -> list[dict[str, str]]:
+    """根据用户文本路由到对应 handler，返回消息列表。
+
+    透传额外的会话上下文给需要它们的 handler（目前只有 report 需要 session_webhook
+    来发文件消息）。
+    """
     intent = match_intent(text)
     handler = _HANDLER_MAP.get(intent)
     if handler is None:
@@ -85,7 +95,25 @@ def dispatch(text: str, conversation_id: str) -> list[dict[str, str]]:
             "text": get_menu_text(),
         }]
     try:
-        return handler.handle(text, conversation_id)
+        # 透传上下文参数（report handler 才会用，其他 handler 自动忽略）
+        return handler.handle(
+            text,
+            conversation_id,
+            chat_type=chat_type,
+            sender_staff_id=sender_staff_id,
+            session_webhook=session_webhook,
+        )
+    except TypeError:
+        # 兼容老 handler（只接受 text, conversation_id）
+        try:
+            return handler.handle(text, conversation_id)
+        except Exception as exc:
+            logger.error("handler %s 执行失败: %s", intent, exc, exc_info=True)
+            return [{
+                "type": "markdown",
+                "title": "处理失败",
+                "text": f"## 处理失败\n\n```\n{exc}\n```\n\n请重试或联系管理员。",
+            }]
     except Exception as exc:
         logger.error("handler %s 执行失败: %s", intent, exc, exc_info=True)
         return [{
@@ -181,7 +209,13 @@ class ReportChatbotHandler:
 
                     # 4. 路由到业务 handler
                     logger.info("开始处理: text=%s", text[:50])
-                    messages = dispatch(text, conversation_id)
+                    messages = dispatch(
+                        text,
+                        conversation_id,
+                        chat_type=chat_type,
+                        sender_staff_id=sender_staff_id,
+                        session_webhook=incoming.session_webhook or "",
+                    )
                     logger.info("路由完成，共 %s 条回复", len(messages))
 
                     # 5. 发送回复
