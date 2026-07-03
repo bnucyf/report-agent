@@ -43,7 +43,9 @@ REM 注意：batch 文件中 %% 才是字面量 %，否则 cmd.exe 会把 %...% 
 REM 使用 Python 脚本精确查找并终止旧 dingtalk_bot 进程（避免 WMIC % 转义问题）
 
 echo [步骤1] 检查旧进程...
-python -c "import subprocess,sys; r=subprocess.run(['wmic','process','where','name=\"python.exe\"','get','processid,commandline','/format:csv'],capture_output=True,text=True,timeout=10); lines=[l for l in r.stdout.splitlines() if 'dingtalk_bot' in l and 'python.exe' in l.lower()]; pids=[]; for l in lines: parts=l.strip().split(','); pid=parts[-1].strip() if parts else ''; if pid.isdigit(): pids.append(pid); print(f'发现 {len(pids)} 个旧进程: {pids}') if pids else print('无旧进程'); for pid in pids: subprocess.run(['taskkill','/F','/PID',pid],capture_output=True); print(f'已终止 PID {pid}')" 2>nul
+REM 用 PowerShell + CIM 查找并终止所有包含 dingtalk_bot 的 python.exe 进程
+REM 注意：不用 WMIC —— 用户机器上 wmic 可能已弃用（Windows 11 24H2+ 默认禁用）
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object { $_.CommandLine -match 'dingtalk_bot\.bot' } | ForEach-Object { Write-Host (\"  Killing PID=\" + $_.ProcessId + \" cmd=\" + $_.CommandLine); Stop-Process -Id $_.ProcessId -Force }"
 echo.
 
 timeout /t 1 /nobreak >nul

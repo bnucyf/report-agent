@@ -121,9 +121,9 @@ def send_markdown_to_user(user_id: str, title: str, text: str) -> dict[str, Any]
 
 
 def send_markdown_to_group(conversation_id: str, title: str, text: str) -> dict[str, Any]:
-    """通过机器人向群聊发 Markdown 消息（REST API 回退，群聊专用 API）。
+    """通过机器人向群聊发 Markdown 消息。
 
-    当 sessionWebhook 缺失时，群聊消息使用 sendToGroupConversation API。
+    群聊 API 路径：/v1.0/robot/groupMessages/send
     """
     if not conversation_id:
         logger.warning("send_markdown_to_group: conversationId 为空，无法发送")
@@ -134,7 +134,7 @@ def send_markdown_to_group(conversation_id: str, title: str, text: str) -> dict[
         "msgKey": "sampleMarkdown",
         "msgParam": json.dumps({"title": title, "text": text}, ensure_ascii=False),
     }
-    return _api_post("/v1.0/robot/oToMessages/sendToGroupConversation", body)
+    return _api_post("/v1.0/robot/groupMessages/send", body)
 
 
 def send_markdown_to_chatbot(conversation_id: str, title: str, text: str) -> dict[str, Any]:
@@ -142,19 +142,7 @@ def send_markdown_to_chatbot(conversation_id: str, title: str, text: str) -> dic
 
     已废弃：仅作为兼容接口，新代码请用 send_markdown_to_user 或 send_markdown_to_group。
     """
-    # 尝试群聊 API（覆盖更广）
-    result = send_markdown_to_group(conversation_id, title, text)
-    if result.get("errcode") == 0:
-        return result
-    # 群聊 API 失败则回退到旧方式
-    logger.warning("sendToGroupConversation 失败，回退到 batchSend")
-    body = {
-        "robotCode": get_client_id(),
-        "conversationId": conversation_id,
-        "msgKey": "sampleMarkdown",
-        "msgParam": json.dumps({"title": title, "text": text}, ensure_ascii=False),
-    }
-    return _api_post("/v1.0/robot/oToMessages/batchSend", body)
+    return send_markdown_to_group(conversation_id, title, text)
 
 
 def send_action_card(conversation_id: str, title: str, text: str, btn_title: str, btn_url: str) -> dict[str, Any]:
@@ -229,15 +217,25 @@ def send_file_via_session_webhook(session_webhook: str, file_name: str, media_id
     session_webhook: 用户消息中带有的 sessionWebhook URL（一次性）
     file_name:       文件名（带后缀）
     media_id:        upload_file() 返回的 mediaId
+
+    钉钉 sessionWebhook 文件消息必填 3 字段：mediaId / fileName / fileType
+    fileType 不填钉钉返回 errcode=401104 "miss param : file->fileType"
     """
     if not session_webhook or not media_id:
         logger.warning("send_file_via_session_webhook: sessionWebhook 或 mediaId 为空")
         return {"errcode": -1, "errmsg": "参数缺失"}
+
+    # 从文件名推断 fileType（钉钉的 fileType 用文件后缀，如 pdf/xlsx/docx）
+    import os
+    ext = os.path.splitext(file_name)[1].lstrip(".").lower() or "file"
+    # 钉钉支持的 fileType: 已知支持 pdf/xlsx/docx/xls/doc/pptx/ppt/zip/rar/txt 等
+    # 未知后缀统一用 "file" 也可通过（钉钉会按文件实际内容识别）
     body = {
         "msgtype": "file",
         "file": {
             "fileName": file_name,
             "mediaId": media_id,
+            "fileType": ext,
         },
     }
     # session_webhook 本身就是一次性 webhook URL,直接 POST 即可
@@ -259,11 +257,17 @@ def send_file_to_user(user_id: str, file_name: str, media_id: str) -> dict[str, 
         "msgKey": "sampleFile",
         "msgParam": json.dumps({"fileName": file_name, "mediaId": media_id}, ensure_ascii=False),
     }
+    logger.info("send_file_to_user: user=%s, file=%s, mediaId=%s", user_id, file_name, media_id)
     return _api_post("/v1.0/robot/oToMessages/batchSend", body)
 
 
 def send_file_to_group(conversation_id: str, file_name: str, media_id: str) -> dict[str, Any]:
-    """通过机器人向群聊发送文件消息（msgKey=sampleFile）。"""
+    """通过机器人向群聊发送文件消息（msgKey=sampleFile）。
+
+    群聊 API 路径：/v1.0/robot/groupMessages/send
+    注意：/v1.0/robot/oToMessages/batchSend 是单聊专用（强制要求 userIds）
+          /v1.0/robot/oToMessages/sendToGroupConversation 不存在（404）
+    """
     if not conversation_id or not media_id:
         logger.warning("send_file_to_group: conversationId 或 mediaId 为空，无法发送")
         return {"errcode": -1, "errmsg": "conversationId/mediaId 为空"}
@@ -273,4 +277,5 @@ def send_file_to_group(conversation_id: str, file_name: str, media_id: str) -> d
         "msgKey": "sampleFile",
         "msgParam": json.dumps({"fileName": file_name, "mediaId": media_id}, ensure_ascii=False),
     }
-    return _api_post("/v1.0/robot/oToMessages/sendToGroupConversation", body)
+    logger.info("send_file_to_group: conv=%s, file=%s, mediaId=%s", conversation_id, file_name, media_id)
+    return _api_post("/v1.0/robot/groupMessages/send", body)
