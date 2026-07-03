@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 echo ========================================
 echo   智能报表机器人 - 启动 (Windows)
