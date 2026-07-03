@@ -38,9 +38,22 @@ if not exist .env (
     exit /b 1
 )
 
+REM 检查是否有旧进程仍在运行（防止多实例冲突导致消息不稳定）
+wmic process where "commandline like '%dingtalk_bot.bot%' and name='python.exe'" get processid 2>nul | findstr /r "[0-9]" >nul 2>&1
+if not errorlevel 1 (
+    echo [警告] 检测到已有 dingtalk_bot 进程在运行！
+    echo [警告] 多实例同时运行会导致消息回复不稳定（消息随机分发给旧/新实例）。
+    echo.
+    echo 正在终止旧进程...
+    wmic process where "commandline like '%dingtalk_bot.bot%' and name='python.exe'" call terminate 2>nul
+    timeout /t 2 /nobreak >nul
+    echo [提示] 旧进程已终止。
+    echo.
+)
+
 REM 检查关键依赖是否已安装，缺失则自动安装
 REM 同时验证 dingtalk-stream SDK 的实际 API（防止版本差异导致 bot.py 运行时失败）
-python -c "import dingtalk_stream; from dingtalk_stream import DingTalkStreamClient; from dingtalk_stream.credential import Credential; from dingtalk_stream.chatbot import ChatbotMessage, AsyncChatbotHandler; import apscheduler, dotenv, requests, yaml" >nul 2>&1
+python -c "import dingtalk_stream; from dingtalk_stream import DingTalkStreamClient, AckMessage; from dingtalk_stream.credential import Credential; from dingtalk_stream.chatbot import ChatbotMessage, ChatbotHandler; import apscheduler, dotenv, requests, yaml" >nul 2>&1
 if errorlevel 1 (
     echo [提示] 检测到依赖缺失或 SDK API 不兼容，正在自动安装...
     pip install -r requirements.txt

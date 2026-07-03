@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""钉钉机器人 Stream 入口：基于 dingtalk-stream SDK 0.20+ 异步 Handler。
+"""钉钉机器人 Stream 入口：基于 dingtalk-stream SDK 官方 ChatbotHandler 模式。
 
 启动方式:
     cd app
@@ -11,9 +11,17 @@
     DINGTALK_CORP_ID         — 企业 CorpId
     DINGTALK_AGENT_ID        — 应用 AgentId
     BOT_ADMIN_USER_ID        — 管理员 UserId（首次启动推送使用说明）
+
+SDK 参考模式（官方示例）:
+    class MyHandler(dingtalk_stream.ChatbotHandler):
+        async def process(self, callback: dingtalk_stream.CallbackMessage):
+            incoming = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
+            self.reply_markdown(title, text, incoming)
+            return dingtalk_stream.AckMessage.STATUS_OK, 'OK'
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -53,7 +61,6 @@ logging.basicConfig(
     ],
 )
 
-
 # ---------- handler 路由表 ----------
 
 _HANDLER_MAP: dict[str, Any] = {
@@ -88,42 +95,66 @@ def dispatch(text: str, conversation_id: str) -> list[dict[str, str]]:
         }]
 
 
-# ---------- Stream 回调 Handler ----------
+# ---------- Stream 回调 Handler（官方 ChatbotHandler 模式）----------
 
 class ReportChatbotHandler:
-    """包装 SDK 的 ChatbotHandler，将消息转给业务 dispatch。
+    """基于 SDK 官方 ChatbotHandler 的消息处理类。
 
-    核心修改：使用 SDK 自带的 reply_markdown / reply_text 方法
-    通过 sessionWebhook 回复消息（Stream 模式官方推荐方式），
-    而不再调用 /v1.0/robot/oToMessages/batchSend REST API。
+    使用 async def process(callback) + ChatbotMessage.from_dict(callback.data)
+    + self.reply_markdown(title, text, incoming) 通过 sessionWebhook 回复。
+
+    当 sessionWebhook 缺失时，回退到 REST API：
+    - 单聊: /v1.0/robot/oToMessages/batchSend（需 userIdList）
+    - 群聊: /v1.0/robot/oToMessages/sendToGroupConversation
     """
 
     @staticmethod
     def build(base_cls: type) -> type:
-        """返回一个继承自 base_cls 的具体 Handler 类。"""
+        """返回一个继承自 base_cls 的具体 Handler 类。
+
+        base_cls 应为 dingtalk_stream.ChatbotHandler（含 reply_markdown 等方法）。
+        """
 
         class _Handler(base_cls):
 
-            def process(self, callback_message: Any):
-                """处理收到的机器人消息，通过 sessionWebhook 回复。"""
+            async def process(self, callback_message: Any):
+                """处理收到的机器人消息，返回 ACK 状态。
+
+                官方模式：
+                - 从 callback_message.data 解析 ChatbotMessage
+                - 使用 self.reply_markdown() 通过 sessionWebhook 回复
+                - 返回 (AckMessage.STATUS_OK, 'OK')
+
+                如果 sessionWebhook 缺失，回退到 REST API。
+                """
                 try:
                     # 1. 从 CallbackMessage 中提取原始 data 字典
                     data = getattr(callback_message, "data", callback_message)
                     if not isinstance(data, dict):
-                        logger.warning("消息 data 不是字典: %s", type(data))
-                        return
+                        logger.warning("消息 data 不是字典: type=%s", type(data))
+                        from dingtalk_stream import AckMessage
+                        return AckMessage.STATUS_OK, "skip"
+
+                    # 打印原始 data 中的关键字段（便于排查 sessionWebhook 缺失）
+                    has_webhook = "sessionWebhook" in data
+                    webhook_url = data.get("sessionWebhook", "")
+                    logger.info("原始 data 字段: sessionWebhook=%s, conversationType=%s, senderStaffId=%s",
+                                "有" if has_webhook else "无",
+                                data.get("conversationType", "?"),
+                                data.get("senderStaffId", "?"))
 
                     # 2. 使用 SDK 的 ChatbotMessage 解析
                     from dingtalk_stream.chatbot import ChatbotMessage
-                    chat_msg = ChatbotMessage.from_dict(data)
+                    incoming = ChatbotMessage.from_dict(data)
 
                     # 3. 提取文本、会话类型等
                     text = ""
-                    if chat_msg.text and getattr(chat_msg.text, "content", None):
-                        text = chat_msg.text.content
+                    if incoming.text and getattr(incoming.text, "content", None):
+                        text = incoming.text.content
 
-                    chat_type = str(chat_msg.conversation_type or "")
-                    conversation_id = chat_msg.conversation_id or ""
+                    chat_type = str(incoming.conversation_type or "")
+                    conversation_id = incoming.conversation_id or ""
+                    sender_staff_id = incoming.sender_staff_id or ""
 
                     # 群聊中 @ 机器人时清理 @机器人名
                     if chat_type == "2" and "@" in text:
@@ -135,34 +166,45 @@ class ReportChatbotHandler:
 
                     if not conversation_id:
                         logger.warning("收到无 conversation_id 的消息，忽略")
-                        return
+                        from dingtalk_stream import AckMessage
+                        return AckMessage.STATUS_OK, "skip"
 
                     if not text:
                         text = "帮助"
 
                     logger.info("收到消息: sender=%s, conv=%s, type=%s, text=%s, webhook=%s",
-                                chat_msg.sender_id or "",
+                                sender_staff_id,
                                 conversation_id,
                                 chat_type,
                                 text[:100],
-                                "有" if chat_msg.session_webhook else "无")
+                                "有" if incoming.session_webhook else "无")
 
                     # 4. 路由到业务 handler
-                    logger.info("开始处理消息: text=%s", text[:50])
+                    logger.info("开始处理: text=%s", text[:50])
                     messages = dispatch(text, conversation_id)
-                    logger.info("路由完成，共 %s 条回复消息", len(messages))
+                    logger.info("路由完成，共 %s 条回复", len(messages))
 
-                    # 5. 通过 SDK 的 reply 方法发送回复
-                    self._send_replies(chat_msg, messages)
+                    # 5. 发送回复
+                    self._send_replies(incoming, messages, chat_type, sender_staff_id, conversation_id)
 
                 except Exception as exc:
                     logger.error("处理用户消息失败: %s", exc, exc_info=True)
 
-            def _send_replies(self, chat_msg: Any, messages: list[dict[str, str]]) -> None:
-                """使用 SDK 的 reply_markdown / reply_text 回复消息。
+                from dingtalk_stream import AckMessage
+                return AckMessage.STATUS_OK, "OK"
 
-                优先使用 sessionWebhook（Stream 模式官方方式）；
-                如果 sessionWebhook 不可用，回退到 REST API。
+            def _send_replies(
+                self,
+                incoming: Any,
+                messages: list[dict[str, str]],
+                chat_type: str,
+                sender_staff_id: str,
+                conversation_id: str,
+            ) -> None:
+                """发送回复消息。
+
+                优先使用 sessionWebhook（self.reply_markdown，SDK 官方方式）；
+                sessionWebhook 缺失时回退到 REST API（区分单聊/群聊）。
                 """
                 if not messages:
                     logger.info("没有需要回复的消息")
@@ -173,40 +215,49 @@ class ReportChatbotHandler:
                     title = msg.get("title", "通知")
                     text_content = msg.get("text", "")
 
-                    logger.info("准备发送第 %s/%s 条回复 (type=%s, title=%s)",
+                    logger.info("发送第 %s/%s 条 (type=%s, title=%s)",
                                 idx + 1, len(messages), msg_type, title)
 
                     try:
-                        if chat_msg.session_webhook:
-                            # 方式 A：通过 sessionWebhook 回复（Stream 模式推荐）
-                            logger.info("使用 sessionWebhook 回复")
-                            if msg_type == "markdown":
-                                result = self.reply_markdown(title, text_content, chat_msg)
-                            elif msg_type == "text":
-                                result = self.reply_text(text_content, chat_msg)
+                        if incoming.session_webhook:
+                            # 方式 A：通过 sessionWebhook 回复（Stream 模式官方推荐）
+                            if msg_type == "text":
+                                result = self.reply_text(text_content, incoming)
                             else:
-                                # 其他类型也用 markdown 回复
-                                result = self.reply_markdown(title, text_content, chat_msg)
-                            logger.info("reply 结果: %s", result)
+                                result = self.reply_markdown(title, text_content, incoming)
+                            logger.info("sessionWebhook 回复结果: %s", result)
                         else:
-                            # 方式 B：sessionWebhook 不可用，回退到 REST API
-                            logger.warning("sessionWebhook 不可用，回退到 REST API")
-                            if msg_type == "markdown":
-                                result = credential.send_markdown_to_chatbot(
-                                    chat_msg.conversation_id, title, text_content)
-                            elif msg_type == "text":
-                                # REST API 没有 send_text_to_chatbot，用 markdown 替代
-                                result = credential.send_markdown_to_chatbot(
-                                    chat_msg.conversation_id, title or "通知", text_content)
+                            # 方式 B：sessionWebhook 缺失，回退到 REST API
+                            logger.warning("sessionWebhook 缺失，回退到 REST API (type=%s)", chat_type)
+                            if chat_type == "1":
+                                # 单聊回退：使用 batchSend + userIdList
+                                result = credential.send_markdown_to_user(
+                                    sender_staff_id, title, text_content)
+                            elif chat_type == "2":
+                                # 群聊回退：使用 sendToGroupConversation
+                                result = credential.send_markdown_to_group(
+                                    conversation_id, title, text_content)
                             else:
-                                result = credential.send_markdown_to_chatbot(
-                                    chat_msg.conversation_id, title, text_content)
-                            logger.info("REST API 结果: %s", result)
+                                # 未知类型，尝试 batchSend
+                                result = credential.send_markdown_to_user(
+                                    sender_staff_id, title, text_content)
+                            logger.info("REST API 回复结果: %s", result)
 
                         time.sleep(0.3)  # 避免消息发送过快被限流
                     except Exception as exc:
                         logger.error("发送消息失败 (type=%s, title=%s): %s",
                                      msg_type, title, exc, exc_info=True)
+                        # 回退到 REST API
+                        try:
+                            if chat_type == "1":
+                                result = credential.send_markdown_to_user(
+                                    sender_staff_id, title, text_content)
+                            else:
+                                result = credential.send_markdown_to_group(
+                                    conversation_id, title, text_content)
+                            logger.info("回退 REST API 结果: %s", result)
+                        except Exception as fallback_exc:
+                            logger.error("REST API 回退也失败: %s", fallback_exc, exc_info=True)
 
                 logger.info("全部 %s 条回复处理完成", len(messages))
 
@@ -226,15 +277,15 @@ def _push_welcome_if_first_run() -> None:
     try:
         from dingtalk_bot.credential import send_text_to_user
         welcome = (
-            "🎉 智能报表机器人已上线！\n\n"
+            "智能报表机器人已上线！\n\n"
             "我是您的数据库分析助手，支持以下指令：\n"
-            "• 发送\"生产用料\" — 查看加工用料明细\n"
-            "• 发送\"质量\" — 查看数据质量诊断\n"
-            "• 发送\"字段\" — 查看字段资产盘点\n"
-            "• 发送\"扫描\" — 启动数据库扫描\n"
-            "• 发送\"进度\" — 查看扫描进度\n"
-            "• 发送\"报告\" — 下载分析报告\n"
-            "• 发送\"帮助\" — 查看完整菜单\n\n"
+            "- 发送\"生产用料\" -- 查看加工用料明细\n"
+            "- 发送\"质量\" -- 查看数据质量诊断\n"
+            "- 发送\"字段\" -- 查看字段资产盘点\n"
+            "- 发送\"扫描\" -- 启动数据库扫描\n"
+            "- 发送\"进度\" -- 查看扫描进度\n"
+            "- 发送\"报告\" -- 下载分析报告\n"
+            "- 发送\"帮助\" -- 查看完整菜单\n\n"
             "在群聊中请 @机器人 触发。"
         )
         send_text_to_user(admin_id, welcome)
@@ -243,6 +294,41 @@ def _push_welcome_if_first_run() -> None:
     except Exception as exc:
         logger.warning("首次启动推送失败（不影响主流程）: %s", exc)
         flag_path.write_text("1", encoding="utf-8")
+
+
+# ---------- 进程互斥（防止多实例） ----------
+
+def _check_single_instance() -> bool:
+    """检查是否有其他 dingtalk_bot 进程正在运行。"""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq python.exe", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=5,
+        )
+        count = 0
+        for line in result.stdout.splitlines():
+            if "dingtalk_bot" in line.lower() or "python" in line.lower():
+                # 进一步检查命令行是否包含 dingtalk_bot
+                count += 1
+        # 更精确：通过 WMIC 检查
+        result2 = subprocess.run(
+            ["wmic", "process", "where", "name='python.exe'", "get", "processid,commandline", "/format:csv"],
+            capture_output=True, text=True, timeout=5,
+        )
+        bot_count = 0
+        for line in result2.stdout.splitlines():
+            if "dingtalk_bot" in line:
+                bot_count += 1
+        if bot_count > 0:
+            logger.warning("检测到已有 %d 个 dingtalk_bot 进程在运行，可能导致消息冲突", bot_count)
+            logger.warning("建议先关闭旧进程：taskkill /F /IM python.exe /FI \"WINDOWTITLE eq dingtalk*\"")
+            # 不强制退出，只警告
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("进程检查失败（不影响启动）: %s", exc)
+        return True
 
 
 # ---------- 主入口 ----------
@@ -275,17 +361,18 @@ def main() -> int:
     # 首次启动推送
     _push_welcome_if_first_run()
 
-    # 加载 SDK，按实际可用 API 组装 Handler
+    # 加载 SDK，使用官方 ChatbotHandler 模式
     try:
-        from dingtalk_stream import DingTalkStreamClient
+        from dingtalk_stream import DingTalkStreamClient, AckMessage
         from dingtalk_stream.credential import Credential as StreamCredential
-        from dingtalk_stream.chatbot import ChatbotMessage, AsyncChatbotHandler
+        from dingtalk_stream.chatbot import ChatbotMessage, ChatbotHandler
     except ImportError as exc:
         logger.error("dingtalk-stream 未安装或导入失败: %s", exc)
         logger.error("请运行: %s -m pip install -r requirements.txt", sys.executable)
         return 1
 
-    handler_cls = ReportChatbotHandler.build(AsyncChatbotHandler)
+    # 使用 ChatbotHandler（含 reply_markdown/reply_text 方法）
+    handler_cls = ReportChatbotHandler.build(ChatbotHandler)
     chatbot_handler = handler_cls()
 
     # 创建客户端并注册 handler

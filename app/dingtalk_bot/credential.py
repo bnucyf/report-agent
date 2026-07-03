@@ -103,11 +103,51 @@ def send_text_to_user(user_id: str, content: str, agent_id: str | None = None) -
     return _oapi_post(f"/topapi/message/corpconversation/asyncsend_v2", {**body, "agent_id": int(aid) if aid else 0})
 
 
+def send_markdown_to_user(user_id: str, title: str, text: str) -> dict[str, Any]:
+    """通过机器人向指定用户单聊发 Markdown 消息（REST API 回退，需 userIdList）。
+
+    当 sessionWebhook 缺失时，单聊消息使用 batchSend API。
+    """
+    if not user_id:
+        logger.warning("send_markdown_to_user: userId 为空，无法发送")
+        return {"errcode": -1, "errmsg": "userId 为空"}
+    body = {
+        "robotCode": get_client_id(),
+        "userIds": [user_id],
+        "msgKey": "sampleMarkdown",
+        "msgParam": json.dumps({"title": title, "text": text}, ensure_ascii=False),
+    }
+    return _api_post("/v1.0/robot/oToMessages/batchSend", body)
+
+
+def send_markdown_to_group(conversation_id: str, title: str, text: str) -> dict[str, Any]:
+    """通过机器人向群聊发 Markdown 消息（REST API 回退，群聊专用 API）。
+
+    当 sessionWebhook 缺失时，群聊消息使用 sendToGroupConversation API。
+    """
+    if not conversation_id:
+        logger.warning("send_markdown_to_group: conversationId 为空，无法发送")
+        return {"errcode": -1, "errmsg": "conversationId 为空"}
+    body = {
+        "robotCode": get_client_id(),
+        "openConversationId": conversation_id,
+        "msgKey": "sampleMarkdown",
+        "msgParam": json.dumps({"title": title, "text": text}, ensure_ascii=False),
+    }
+    return _api_post("/v1.0/robot/oToMessages/sendToGroupConversation", body)
+
+
 def send_markdown_to_chatbot(conversation_id: str, title: str, text: str) -> dict[str, Any]:
     """通过机器人向会话（单聊/群聊）发 Markdown 消息。
 
-    conversation_id 来自 ChatbotMessage 的 conversation_id 字段。
+    已废弃：仅作为兼容接口，新代码请用 send_markdown_to_user 或 send_markdown_to_group。
     """
+    # 尝试群聊 API（覆盖更广）
+    result = send_markdown_to_group(conversation_id, title, text)
+    if result.get("errcode") == 0:
+        return result
+    # 群聊 API 失败则回退到旧方式
+    logger.warning("sendToGroupConversation 失败，回退到 batchSend")
     body = {
         "robotCode": get_client_id(),
         "conversationId": conversation_id,
