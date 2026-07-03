@@ -44,3 +44,11 @@ desktop.ini
 .workbuddy/
 .codebuddy/
 .npm-cache/
+
+# --- 客户文档（不入库）---
+*.docx
+*.doc
+!docs/**/*.docx
+!docs/**/*.doc
+# 项目内部进展同步文件
+/森德科技-进展同步.docx
