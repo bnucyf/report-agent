@@ -1,13 +1,9 @@
 # -*- coding: utf-8 -*-
-"""钉钉机器人 Stream 入口：注册 ChatbotHandler + CardCallbackHandler。
+"""钉钉机器人 Stream 入口：基于 dingtalk-stream SDK 0.20+ 异步 Handler。
 
 启动方式:
     cd app
     python -m dingtalk_bot.bot
-
-或:
-    cd app/dingtalk_bot
-    python bot.py
 
 环境变量（从 .env 读取）:
     DINGTALK_CLIENT_ID       — 应用 AppKey
@@ -92,8 +88,6 @@ def dispatch(text: str, conversation_id: str) -> list[dict[str, str]]:
         }]
 
 
-# ---------- Stream 回调 ----------
-
 def _send_messages(conversation_id: str, messages: list[dict[str, str]]) -> None:
     """把 handler 返回的消息列表逐条发送。"""
     for msg in messages:
@@ -114,64 +108,93 @@ def _send_messages(conversation_id: str, messages: list[dict[str, str]]) -> None
             logger.error("发送消息失败 (type=%s, title=%s): %s", msg_type, title, exc)
 
 
-def _on_chatbot_message(message: Any) -> None:
-    """Stream 模式收到用户消息时的回调。"""
-    try:
-        # dingtalk-stream SDK 的消息结构
-        incoming = message.data if hasattr(message, "data") else message
-        text = ""
-        conversation_id = ""
-        sender_id = ""
-        chat_type = ""
+# ---------- Stream 回调 Handler ----------
 
-        if isinstance(incoming, dict):
-            text = incoming.get("text", {}).get("content", "").strip()
-            conversation_id = incoming.get("conversationId", "")
-            sender_id = incoming.get("senderId", "")
-            chat_type = incoming.get("conversationType", "")  # 1=单聊, 2=群聊
-            # 群聊中 @ 机器人时 text 前面可能有 @机器人名，清理
-            if chat_type == "2" and "@" in text:
-                # 去掉 @机器人名 部分
-                at_parts = text.split(" ", 1)
-                if len(at_parts) > 1 and at_parts[0].startswith("@"):
-                    text = at_parts[1].strip()
-                else:
-                    text = text.replace("@", "").strip()
+class ReportChatbotHandler:
+    """包装 SDK 的 ChatbotHandler，将消息转给业务 dispatch。
 
-        logger.info("收到消息: sender=%s, conv=%s, type=%s, text=%s",
-                     sender_id, conversation_id, chat_type, text[:100])
+    注意：不直接继承 AsyncChatbotHandler，而是在运行时按 SDK 实际 API 选择继承，
+    避免不同版本之间类签名差异导致启动失败。
+    """
 
-        if not text:
-            text = "帮助"
+    @staticmethod
+    def build(base_cls: type) -> type:
+        """返回一个继承自 base_cls 的具体 Handler 类。"""
 
-        messages = dispatch(text, conversation_id)
-        _send_messages(conversation_id, messages)
+        class _Handler(base_cls):
+            def process(self, callback_message: Any):
+                try:
+                    msg = self._parse_message(callback_message)
+                    if not msg.get("conversation_id"):
+                        logger.warning("收到无 conversation_id 的消息，忽略")
+                        return
 
-        # SDK 需要 reply 或者不需要（取决于 SDK 版本）
-        if hasattr(message, "reply"):
-            try:
-                message.reply("已处理")
-            except Exception:
-                pass
+                    text = msg.get("text", "").strip()
+                    conversation_id = msg["conversation_id"]
+                    sender_id = msg.get("sender_id", "")
+                    chat_type = msg.get("chat_type", "")
 
-    except Exception as exc:
-        logger.error("处理用户消息失败: %s", exc, exc_info=True)
+                    logger.info("收到消息: sender=%s, conv=%s, type=%s, text=%s",
+                                sender_id, conversation_id, chat_type, text[:100])
 
+                    if not text:
+                        text = "帮助"
 
-def _on_card_callback(callback: Any) -> None:
-    """互动卡片按钮回调。"""
-    try:
-        incoming = callback.data if hasattr(callback, "data") else callback
-        if isinstance(incoming, dict):
-            action = incoming.get("action", "")
-            out_track_id = incoming.get("outTrackId", "")
-            conversation_id = incoming.get("conversationId", "")
-            logger.info("卡片回调: action=%s, out_track_id=%s", action, out_track_id)
+                    messages = dispatch(text, conversation_id)
+                    _send_messages(conversation_id, messages)
+                except Exception as exc:
+                    logger.error("处理用户消息失败: %s", exc, exc_info=True)
 
-            # 根据 action 重新查询并更新卡片
-            # TODO: 实现卡片翻页/钻取逻辑
-    except Exception as exc:
-        logger.error("处理卡片回调失败: %s", exc, exc_info=True)
+            def _parse_message(self, callback_message: Any) -> dict[str, Any]:
+                """把 SDK CallbackMessage / ChatbotMessage 转成统一字典。"""
+                # 优先使用 ChatbotMessage.from_dict 解析 data
+                data = getattr(callback_message, "data", callback_message)
+                if not isinstance(data, dict):
+                    logger.warning("消息 data 不是字典: %s", type(data))
+                    return {}
+
+                try:
+                    from dingtalk_stream.chatbot import ChatbotMessage
+                    chat_msg = ChatbotMessage.from_dict(data)
+                except Exception:
+                    chat_msg = None
+
+                if chat_msg is not None:
+                    text = ""
+                    if chat_msg.text and getattr(chat_msg.text, "content", None):
+                        text = chat_msg.text.content
+                    chat_type = str(chat_msg.conversation_type or "")
+                    # 群聊中 @ 机器人时清理 @机器人名
+                    if chat_type == "2" and "@" in text:
+                        at_parts = text.split(" ", 1)
+                        if len(at_parts) > 1 and at_parts[0].startswith("@"):
+                            text = at_parts[1].strip()
+                        else:
+                            text = text.replace("@", "").strip()
+                    return {
+                        "text": text,
+                        "conversation_id": chat_msg.conversation_id or "",
+                        "sender_id": chat_msg.sender_id or "",
+                        "chat_type": chat_type,
+                    }
+
+                # 兜底：直接读字典
+                text = data.get("text", {}).get("content", "") if isinstance(data.get("text"), dict) else ""
+                chat_type = str(data.get("conversationType", ""))
+                if chat_type == "2" and "@" in text:
+                    at_parts = text.split(" ", 1)
+                    if len(at_parts) > 1 and at_parts[0].startswith("@"):
+                        text = at_parts[1].strip()
+                    else:
+                        text = text.replace("@", "").strip()
+                return {
+                    "text": text,
+                    "conversation_id": data.get("conversationId", ""),
+                    "sender_id": data.get("senderId", ""),
+                    "chat_type": chat_type,
+                }
+
+        return _Handler
 
 
 # ---------- 首次启动推送使用说明 ----------
@@ -236,35 +259,27 @@ def main() -> int:
     # 首次启动推送
     _push_welcome_if_first_run()
 
-    # 启动 Stream
+    # 加载 SDK，按实际可用 API 组装 Handler
     try:
         from dingtalk_stream import DingTalkStreamClient
-        from dingtalk_stream.chatbot import ChatbotHandler
-        from dingtalk_stream.card import CardCallbackHandler
-    except ImportError:
-        logger.error("dingtalk-stream 未安装，请运行: pip install dingtalk-stream")
-        logger.error("安装后重新启动本程序。")
+        from dingtalk_stream.credential import Credential as StreamCredential
+        from dingtalk_stream.chatbot import ChatbotMessage, AsyncChatbotHandler
+    except ImportError as exc:
+        logger.error("dingtalk-stream 未安装或导入失败: %s", exc)
+        logger.error("请运行: %s -m pip install -r requirements.txt", sys.executable)
         return 1
 
-    # 注册 handler
-    chatbot_handler = ChatbotHandler()
-    chatbot_handler.register_callback_handler(_on_chatbot_message)
+    handler_cls = ReportChatbotHandler.build(AsyncChatbotHandler)
+    chatbot_handler = handler_cls()
 
+    # 创建客户端并注册 handler
     try:
-        card_handler = CardCallbackHandler()
-        card_handler.register_callback_handler(_on_card_callback)
-    except Exception:
-        card_handler = None
-        logger.warning("CardCallbackHandler 注册跳过（SDK 版本可能不支持）")
-
-    # 创建客户端
-    client = DingTalkStreamClient(
-        credential.get_client_id(),
-        credential.get_client_secret(),
-    )
-    client.register_callback_handler(chatbot_handler)
-    if card_handler:
-        client.register_callback_handler(card_handler)
+        stream_credential = StreamCredential(client_id, client_secret)
+        client = DingTalkStreamClient(stream_credential)
+        client.register_callback_handler(ChatbotMessage.TOPIC, chatbot_handler)
+    except Exception as exc:
+        logger.error("Stream 客户端初始化失败: %s", exc, exc_info=True)
+        return 1
 
     # 启动定时任务（可选）
     try:

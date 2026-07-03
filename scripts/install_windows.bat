@@ -44,9 +44,9 @@ if errorlevel 1 (
 echo 依赖安装完成。
 
 echo [3.5/5] 验证关键依赖...
-python -c "import dingtalk_stream, apscheduler, dotenv, requests, yaml, pandas, pymssql, streamlit, openpyxl" >nul 2>&1
+python -c "import dingtalk_stream; from dingtalk_stream import DingTalkStreamClient; from dingtalk_stream.credential import Credential; from dingtalk_stream.chatbot import ChatbotMessage, AsyncChatbotHandler; import apscheduler, dotenv, requests, yaml, pandas, pymssql, streamlit, openpyxl" >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 依赖验证失败，部分包未能正常导入。
+    echo [错误] 依赖验证失败，部分包未能正常导入或 SDK API 不兼容。
     pause
     exit /b 1
 )

@@ -39,9 +39,10 @@ if not exist .env (
 )
 
 REM 检查关键依赖是否已安装，缺失则自动安装
-python -c "import dingtalk_stream, apscheduler, dotenv, requests, yaml" >nul 2>&1
+REM 同时验证 dingtalk-stream SDK 的实际 API（防止版本差异导致 bot.py 运行时失败）
+python -c "import dingtalk_stream; from dingtalk_stream import DingTalkStreamClient; from dingtalk_stream.credential import Credential; from dingtalk_stream.chatbot import ChatbotMessage, AsyncChatbotHandler; import apscheduler, dotenv, requests, yaml" >nul 2>&1
 if errorlevel 1 (
-    echo [提示] 检测到依赖缺失，正在自动安装...
+    echo [提示] 检测到依赖缺失或 SDK API 不兼容，正在自动安装...
     pip install -r requirements.txt
     if errorlevel 1 (
         echo [错误] 依赖安装失败，请检查网络连接或 requirements.txt。
