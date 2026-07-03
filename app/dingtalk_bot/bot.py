@@ -148,7 +148,9 @@ class ReportChatbotHandler:
                                 "有" if chat_msg.session_webhook else "无")
 
                     # 4. 路由到业务 handler
+                    logger.info("开始处理消息: text=%s", text[:50])
                     messages = dispatch(text, conversation_id)
+                    logger.info("路由完成，共 %s 条回复消息", len(messages))
 
                     # 5. 通过 SDK 的 reply 方法发送回复
                     self._send_replies(chat_msg, messages)
@@ -162,40 +164,51 @@ class ReportChatbotHandler:
                 优先使用 sessionWebhook（Stream 模式官方方式）；
                 如果 sessionWebhook 不可用，回退到 REST API。
                 """
-                for msg in messages:
+                if not messages:
+                    logger.info("没有需要回复的消息")
+                    return
+
+                for idx, msg in enumerate(messages):
                     msg_type = msg.get("type", "markdown")
                     title = msg.get("title", "通知")
                     text_content = msg.get("text", "")
 
+                    logger.info("准备发送第 %s/%s 条回复 (type=%s, title=%s)",
+                                idx + 1, len(messages), msg_type, title)
+
                     try:
                         if chat_msg.session_webhook:
                             # 方式 A：通过 sessionWebhook 回复（Stream 模式推荐）
+                            logger.info("使用 sessionWebhook 回复")
                             if msg_type == "markdown":
                                 result = self.reply_markdown(title, text_content, chat_msg)
-                                logger.info("reply_markdown 结果: %s", result)
                             elif msg_type == "text":
                                 result = self.reply_text(text_content, chat_msg)
-                                logger.info("reply_text 结果: %s", result)
                             else:
                                 # 其他类型也用 markdown 回复
                                 result = self.reply_markdown(title, text_content, chat_msg)
-                                logger.info("reply_markdown(fallback) 结果: %s", result)
+                            logger.info("reply 结果: %s", result)
                         else:
                             # 方式 B：sessionWebhook 不可用，回退到 REST API
                             logger.warning("sessionWebhook 不可用，回退到 REST API")
                             if msg_type == "markdown":
                                 result = credential.send_markdown_to_chatbot(
                                     chat_msg.conversation_id, title, text_content)
-                                logger.info("REST API send_markdown 结果: %s", result)
                             elif msg_type == "text":
                                 # REST API 没有 send_text_to_chatbot，用 markdown 替代
                                 result = credential.send_markdown_to_chatbot(
                                     chat_msg.conversation_id, title or "通知", text_content)
-                                logger.info("REST API send_markdown(text fallback) 结果: %s", result)
+                            else:
+                                result = credential.send_markdown_to_chatbot(
+                                    chat_msg.conversation_id, title, text_content)
+                            logger.info("REST API 结果: %s", result)
 
                         time.sleep(0.3)  # 避免消息发送过快被限流
                     except Exception as exc:
-                        logger.error("发送消息失败 (type=%s, title=%s): %s", msg_type, title, exc, exc_info=True)
+                        logger.error("发送消息失败 (type=%s, title=%s): %s",
+                                     msg_type, title, exc, exc_info=True)
+
+                logger.info("全部 %s 条回复处理完成", len(messages))
 
         return _Handler
 

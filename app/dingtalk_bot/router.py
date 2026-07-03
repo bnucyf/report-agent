@@ -53,13 +53,25 @@ _KEYWORD_MAP: list[dict[str, Any]] = [
 
 
 def load_keywords_config() -> list[dict[str, Any]]:
-    """从 config/bot_keywords.json 加载自定义关键词（如有）。"""
+    """从 config/bot_keywords.json 加载自定义关键词（如有）。
+
+    如果文件不存在、内容格式不对或为空，则回退到内置的 _KEYWORD_MAP，
+    避免因为空配置文件导致所有关键词失效。
+    """
     config_path = Path(__file__).resolve().parents[2] / "config" / "bot_keywords.json"
     if config_path.exists():
         try:
-            return json.loads(config_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(data, list) and len(data) > 0 and all(
+                isinstance(item, dict) and "keywords" in item and "handler" in item
+                for item in data
+            ):
+                return data
+            logger.warning(
+                "config/bot_keywords.json 内容无效（应为非空 list[dict]），使用内置关键词。"
+            )
+        except Exception as exc:
+            logger.warning("读取 config/bot_keywords.json 失败: %s，使用内置关键词。", exc)
     return _KEYWORD_MAP
 
 
@@ -83,9 +95,16 @@ def match_intent(text: str) -> str:
 
 def get_menu_text() -> str:
     """生成菜单文本。"""
-    lines = ["## 智能报表机器人\n", "支持以下指令，直接发送关键词即可：\n"]
+    lines = [
+        "## 智能报表机器人",
+        "",
+        "支持以下指令，直接发送关键词即可：",
+        "",
+    ]
     for item in load_keywords_config():
         kws = " / ".join(item["keywords"][:3])
-        lines.append(f"- **{kws}**：{item['description']}")
-    lines.append("\n> 提示：在群聊中需要 @机器人 触发；单聊直接发送即可。")
+        desc = item.get("description", "")
+        lines.append(f"**{kws}** —— {desc}")
+    lines.append("")
+    lines.append("> 提示：在群聊中需要 @机器人 触发；单聊直接发送即可。")
     return "\n".join(lines)
