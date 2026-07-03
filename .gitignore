@@ -1,0 +1,46 @@
+# --- 凭证 / 环境变量（绝不提交） ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- 运行产物（快照 / 报告 / 日志，2.9G+，不入库） ---
+outputs/snapshots/
+outputs/reports/
+outputs/scan.log
+outputs/scan_diag.log
+outputs/scan_state.json
+outputs/scan_progress.json
+outputs/scan_control.json
+outputs/bot.log
+outputs/chm_decompile/
+
+# 保留空目录结构
+!outputs/.gitkeep
+!outputs/snapshots/.gitkeep
+!outputs/reports/.gitkeep
+
+# --- IDE / 编辑器 ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- 操作系统 ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- 工具链 ---
+.workbuddy/
+.codebuddy/
+.npm-cache/

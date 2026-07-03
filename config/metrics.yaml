@@ -1,0 +1,20 @@
+modules:
+  inventory:
+    label: 库存与仓库
+    keywords: [inventory, stock, warehouse, store, rdrecord, currentstock, inv, 存货, 库存, 仓库, 出库, 入库]
+  sales:
+    label: 销售
+    keywords: [sale, sales, order, dispatch, customer, ar, 销售, 客户, 发货, 订单, 应收]
+  purchase:
+    label: 采购
+    keywords: [purchase, po, vendor, supplier, ap, 采购, 供应商, 应付]
+  finance:
+    label: 往来与财务
+    keywords: [account, receivable, payable, voucher, settle, ar, ap, 往来, 应收, 应付, 凭证, 结算]
+  project:
+    label: 项目与施工
+    keywords: [project, job, site, construct, task, 项目, 施工, 工地, 现场]
+quality_rules:
+  max_sample_rows: 1000
+  top_issue_fields: 30
+  top_candidate_tables: 40
